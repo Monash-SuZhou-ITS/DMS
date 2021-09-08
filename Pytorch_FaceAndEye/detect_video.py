@@ -43,7 +43,7 @@ parser.add_argument('--show_cutting_image', action ="store_true", default =True,
 parser.add_argument('--save_folder', default='./curve/info', type=str, help='Dir to save results')
 parser.add_argument('--face_images_path', default='./data/face_images', type=str, help='path to load face_images')
 parser.add_argument('--face_features_save_path', default='./data/face_features/', type=str, help='path to save face_features')
-parser.add_argument('--face_features_save_name', default='face_features', type=str, help=' save face_features name')
+parser.add_argument('--face_features_save_name', default='/face_features', type=str, help=' save face_features name')
 
 args = parser.parse_args()
 
@@ -71,6 +71,8 @@ def feature_save(arcface_model, face_images_path, save_path):
     if not os.path.exists(save_path):
         os.makedirs(save_path)
     save_data = save_path + args.face_features_save_name
+    # doc = open(save_data, "rb")
+    # persons_faces = pickle.load(doc)  # 读取列表形式
     doc = open(save_data, "ab+")
     persons_faces = []  # 建立人脸库的列表
     for person in os.listdir(face_images_path):  # 遍历每一个人脸文件夹
@@ -83,7 +85,7 @@ def feature_save(arcface_model, face_images_path, save_path):
             #person_feature = net.encode(person_picture[None, ...])  # 获取编码后的每一个人的脸部特征
             output = arcface_model(data)  # 获取特征
             output = output.data.cpu().numpy()
-            print(output.shape)
+            #print(output.shape)
 
             fe_1 = output[::2]#正面特征
             fe_2 = output[1::2]#镜像特征
@@ -94,7 +96,9 @@ def feature_save(arcface_model, face_images_path, save_path):
             #feature = person_feature.detach().cpu()  # 将脸部特征转到CPU上，节省GPU的计算量
             person_face.append(person_feature)  # 将同一个人脸的不同人脸特征存放到同一个列表中
         # persons_faces[person] = person_face  #
-        persons_faces.append([person, torch.cat(person_face, dim=0)])  # 将不同人的名字、脸部特征存放到同一个列表中
+        #persons_faces.append([person, torch.cat(person_face, dim=0)])  # 将不同人的名字、脸部特征存放到同一个列表中
+        persons_faces.append([person, person_face])  # 将不同人的名字、脸部特征存放到同一个列表中
+    print(persons_faces)
     pickle.dump(persons_faces, doc)  # 按照列表形式存入文件
 
 def load_model(model, pretrained_path, load_to_cpu):
@@ -243,15 +247,15 @@ if __name__ == '__main__':
     resize = 1
 
     # 存储已有人脸特征
-    #feature_save(arcface_model,args.face_images_path, args.face_features_save_path)
-    #exit()
+    feature_save(arcface_model, args.face_images_path, args.face_features_save_path)
+    # exit()
     face_images_path = args.face_images_path
     # 加载已有人脸特征
     persons = []  # 建立人脸库的列表
     persons_name = []
     for person in os.listdir(face_images_path):  # 遍历每一个人脸文件夹
         person_faces = []  # 用来同一个人的不同的人脸特征（一个人获取的可能不止一张照片）
-        persons_name.append(person)  # 存放人的名字
+        #persons_name.append(person)  # 存放人的名字
         for face in os.listdir(os.path.join(face_images_path, person)):  # 人脸照片转换为特征
             person_image = load_image(os.path.join(face_images_path, person,
                                                    face))  # transform(Image.open(os.path.join(file_path, person, face))).cuda()
@@ -269,8 +273,6 @@ if __name__ == '__main__':
             #print(person_feature)
             # feature = person_feature.detach().cpu()  # 将脸部特征转到CPU上，节省GPU的计算量
             person_faces.append(person_feature)  # 将同一个人脸的人脸特征存放到同一个列表中
-        if(person == "gzd"):
-            print(person,person_faces)
         # persons_faces[person] = person_face  #
         persons.append([person, person_faces])  # 将不同人的名字、脸部特征存放到同一个列表中
     #print(persons)
@@ -328,6 +330,7 @@ if __name__ == '__main__':
             if torch.cuda.is_available():
                 xx = xx.cuda()
             y = net(xx)
+            #print(y)
             softmax = nn.Softmax(dim=-1)
             detect = Detect(Config.class_num, 0, 200, 0.01, 0.45)
             priors = utils.default_prior_box()
@@ -343,7 +346,7 @@ if __name__ == '__main__':
             ).data
             labels = VOC_CLASSES
             top_k = 10
-
+            #print(detections)
             # 将检测结果放置于图片上
             scale = torch.Tensor(img_raw.shape[1::-1]).repeat(2)
             for i in range(detections.size(1)):
@@ -553,6 +556,10 @@ if __name__ == '__main__':
                 #与已有人脸特征比较
                 maxdiff = 0
                 persons_similarity = []
+                save_data = args.face_features_save_path + args.face_features_save_name
+                doc = open(save_data, "rb")
+                person = pickle.load(doc)  # 读取列表形式
+                print(person)
                 for person_faces in persons:
                     person_name = person_faces[0]
                     #print(person_name)
@@ -571,7 +578,7 @@ if __name__ == '__main__':
                 # data = pd.DataFrame(persons_similarity)
                 # data = data.sort_values(by=1, ascending=False)
                 # obj_name = data.iloc[0][0]
-        print(name,maxdiff)
+        #print(name, maxdiff)
         # cv2.putText(img_raw, (" 相似度:%.2f" % maxdiff), (60, 40), cv2.FONT_HERSHEY_DUPLEX, 1, (255, 0, 0))  # 相似度
         cv2.putText(img_raw, str("who :" + name), (500, 40), cv2.FONT_HERSHEY_DUPLEX, 1, (255, 0, 0))  # 展示who
         t7 = time.time()
