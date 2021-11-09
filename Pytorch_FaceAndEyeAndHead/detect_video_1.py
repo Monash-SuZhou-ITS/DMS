@@ -5,9 +5,12 @@ import torch
 from torch.autograd import *
 import torch.backends.cudnn as cudnn
 import pickle
+from argparse import ArgumentParser
 import numpy as np
 import cv2
-
+import onnxruntime
+import sys
+from pathlib import Path
 import time
 from SSD import utils
 from SSD.voc0712 import *
@@ -28,15 +31,16 @@ from utils.box_utils import decode, decode_landm
 from models.fsanet.FSANET_model import *
 from keras.layers import Average
 from math import cos, sin
+from backbones import get_model
 
 parser = argparse.ArgumentParser(description='Retinaface')
 
 parser.add_argument('-m', '--retinaface_model', default='./weights/mobilenet0.25_Final.pth',
                     type=str, help='Trained state_dict file path to open')
-parser.add_argument('--arcface_model', default='./weights/resnet18_110.pth',#./weights/resnet18_110.pth./weights/ms1mv3_arcface_r18_fp16/backbone.pth
+parser.add_argument('--arcface_model', default='./weights/ms1mv3_arcface_r18_fp16/resnet18_pth.pth',#./weights/resnet18_110.pth ./weights/ms1mv3_arcface_r18_fp16/resnet18_pth.pth
                     type=str, help='Trained arcface state_dict file path to open')
 parser.add_argument('--retinaface_network', default='mobile0.25', help='Backbone network mobile0.25 or resnet50')
-parser.add_argument('--arcface_network',default='mobile0.25', help='Backbone network mobile0.25 or resnet50')
+parser.add_argument('--arcface_network',default='r18', help='Backbone network mobile0.25 or resnet50')
 
 parser.add_argument('--cpu', action="store_true", default=False, help='Use cpu inference')
 parser.add_argument('--confidence_threshold', default=0.4, type=float, help='confidence_threshold')#default=0.02
@@ -51,7 +55,6 @@ parser.add_argument('--save_folder', default='./curve/info', type=str, help='Dir
 parser.add_argument('--face_images_path', default='./data/face_images', type=str, help='path to load face_images')
 parser.add_argument('--face_features_save_path', default='./data/face_features/', type=str, help='path to save face_features')
 parser.add_argument('--face_features_save_name', default='/face_features_0', type=str, help=' save face_features name')
-parser.add_argument('--store_face', action ="store_true", default =False, help = 'store_images')
 
 args = parser.parse_args()
 
@@ -151,82 +154,32 @@ def load_model(model, pretrained_path, load_to_cpu):
     return model
 
 def load_image(img_path):
-    image = cv2.imread(img_path)
-    if image is None:
-        return None
-    #image = cv2_letterbox_image(image,128)
-    image = cv2.resize(image, (128, 128))
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    image = np.dstack((image, np.fliplr(image)))
-    image = image.transpose((2, 0, 1))
-    image = image[:, np.newaxis, :, :]
-    image = image.astype(np.float32, copy=False)
-    image -= 127.5
-    image /= 127.5
-    return image
+    if img_path is None:
+        img = np.random.randint(0, 255, size=(112, 112, 3), dtype=np.uint8)
+    else:
+        img = cv2.imread(img_path)
+        img = cv2.resize(img, (112, 112))
 
-def image_format(image):
-    if image is None:
-        return None
-    #image = cv2_letterbox_image(image,128)
-    #print('image:', image)
-    print('image.shape:' ,image.shape)
-    image = cv2.resize(image, (128, 128))
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    image = np.dstack((image, np.fliplr(image)))
-    image = image.transpose((2, 0, 1))
-    image = image[:, np.newaxis, :, :]
-    image = image.astype(np.float32, copy=False)
-    image -= 127.5
-    image /= 127.5
-    return image
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = np.transpose(img, (2, 0, 1))
+    img = torch.from_numpy(img).unsqueeze(0).float()
+    img.div_(255).sub_(0.5).div_(0.5)
+    return img
+
+def image_format(img):
+    if img is None:
+        img = np.random.randint(0, 255, size=(112, 112, 3), dtype=np.uint8)
+    else:
+        img = cv2.resize(img, (112, 112))
+
+    #img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = np.transpose(img, (2, 0, 1))
+    img = torch.from_numpy(img).unsqueeze(0).float()
+    img.div_(255).sub_(0.5).div_(0.5)
+    return img
 #计算余弦距离
 def cosin_metric(x1, x2):
     return np.dot(x1, x2) / (np.linalg.norm(x1) * np.linalg.norm(x2))
-
-def compare(load_path, pic1_path, pic2_path):
-    # img1 = Image.open(picture1_path)
-    # if img1.mode != 'L':
-    #     img = img1.convert('L')
-    # person1 = tf(img1).cuda()
-    # person1_feature = arcface_model(person1[None, ...])[0]
-
-    person1_image = load_image(pic1_path)
-    data = torch.from_numpy(person1_image)
-    data = data.to(torch.device("cuda"))
-    output = arcface_model(data)  # 获取特征
-    output = output.data.cpu().numpy()
-
-    # 获取不重复图片 并分组
-    fe_1 = output[::2]
-    fe_2 = output[1::2]
-    # print("this",cnt)
-    # print(fe_1.shape,fe_2.shape)
-    person1_feature = np.hstack((fe_1, fe_2))
-    person1_feature = person1_feature.reshape(1024)
-    #print(person1_feature.shape)
-
-    # img2 = Image.open(picture2_path)
-    # if img2.mode != 'L':
-    #     img2 = img2.convert('L')
-    # person2 = tf(img2).cuda()
-    # person2_feature = arcface_model(person2[None, ...])[0]
-    # person2_image = load_image(pic2_path)
-    person2_image = load_image(pic2_path)
-    data = torch.from_numpy(person2_image)
-    data = data.to(torch.device("cuda"))
-    output = arcface_model(data)  # 获取特征
-    output = output.data.cpu().numpy()
-
-    fe_1 = output[::2]
-    fe_2 = output[1::2]
-    person2_feature = np.hstack((fe_1, fe_2))
-    person2_feature = person2_feature.reshape(1024)
-    diff = cosin_metric(person1_feature, person2_feature)
-    print("diff:", diff)
-    # siam = compare(person1_feature, person2_feature)
-    # print(siam.item())
-
 def draw_axis(img, yaw, pitch, roll, tdx=None, tdy=None, size = 50):
     print("yaw:", yaw)
     print("roll:", roll)
@@ -312,10 +265,15 @@ def draw_headpose_det(dets, input_img, faces, ad, img_size, img_w, img_h, model)
         # the face and extract the face ROI
         (h0, w0) = input_img.shape[:2]
         det = list(map(int, det))
-        (x1, y1, x2, y2) = det[0], det[1], det[2], det[3]
+        (startX, startY, endX, endY) = det[0], det[1], det[2], det[3]
         # print((startX, startY, endX, endY))
-        w = x2 - x1
-        h = y2 - y1
+        x1 = startX
+        y1 = startY
+        w = endX - startX
+        h = endY - startY
+
+        x2 = x1 + w
+        y2 = y1 + h
 
         xw1 = max(int(x1 - ad * w), 0)
         yw1 = max(int(y1 - ad * h), 0)
@@ -343,55 +301,13 @@ def draw_headpose_det(dets, input_img, faces, ad, img_size, img_w, img_h, model)
 
 
 if __name__ == '__main__':
-    # # 检测cuda是否可用
-    if torch.cuda.is_available():
-        print('-----gpu mode-----')
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
-    else:
-        print('-----cpu mode-----')
+    # 检测cuda是否可用
+    # if torch.cuda.is_available():
+    #     print('-----gpu mode-----')
+    #     torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # else:
+    #     print('-----cpu mode-----')
     colors_tableau = [(214, 39, 40), (23, 190, 207), (188, 189, 34), (188, 34, 188), (205, 108, 8), (150, 34, 188), (105, 108, 8)]
-
-    # # arcface net and model
-    # device = torch.device("cpu" if args.cpu else "cuda")
-    # arcface_net = resnet_face18(False)
-    # #arcface_model = DataParallel(arcface_net)
-    # arcface_model = arcface_net
-    # arcface_model.load_state_dict(torch.load(args.arcface_model), strict=False)
-    # arcface_model.to(device)
-    # arcface_model.eval()
-    #
-    # print('Finished loading arcface model!')
-    #
-    # face_images_path = args.face_images_path
-    # # 加载已有人脸特征
-    # persons = []  # 建立人脸库的列表
-    # persons_name = []
-    # for person in os.listdir(face_images_path):  # 遍历每一个人脸文件夹
-    #     person_faces = []  # 用来同一个人的不同的人脸特征（一个人获取的可能不止一张照片）
-    #     # persons_name.append(person)  # 存放人的名字
-    #     for face in os.listdir(os.path.join(face_images_path, person)):  # 人脸照片转换为特征
-    #         person_image = load_image(os.path.join(face_images_path, person,
-    #                                                face))  # transform(Image.open(os.path.join(file_path, person, face))).cuda()
-    #
-    #         data = torch.from_numpy(person_image)
-    #         data = data.to(torch.device("cpu" if args.cpu else "cuda"))
-    #         # person_feature = net.encode(person_picture[None, ...])  # 获取编码后的每一个人的脸部特征
-    #         output = arcface_model(data)  # 获取特征
-    #         output = output.data.cpu().numpy()
-    #         # print(output.shape)  # 2*512
-    #         fe_1 = output[::2]  # 正面特征
-    #         fe_2 = output[1::2]  # 镜像特征
-    #         # person_feature = []
-    #         person_feature = np.hstack((fe_1, fe_2))
-    #         person_feature = person_feature.reshape(1024)
-    #         # print(person_feature)
-    #         # feature = person_feature.detach().cpu()  # 将脸部特征转到CPU上，节省GPU的计算量
-    #         person_faces.append(person_feature)  # 将同一个人脸的人脸特征存放到同一个列表中
-    #     # persons_faces[person] = person_face  #
-    #     persons.append([person, person_faces])  # 将不同人的名字、脸部特征存放到同一个列表中
-    # print(persons)
-    # exit()
-
 
     # 初始化头部姿态估计网络
     # load model and weights
@@ -490,15 +406,19 @@ if __name__ == '__main__':
 
 
 
-    #arcface net and model
-    arcface_net = resnet_face18(False)
-    #arcface_model = DataParallel(arcface_net)
-    arcface_model = arcface_net
-    arcface_model.load_state_dict(torch.load(args.arcface_model), strict=False)
-    arcface_model.to(device)
+    # #arcface net and model
+    # arcface_net = resnet_face18(False)
+    # #arcface_model = DataParallel(arcface_net)
+    # arcface_model = arcface_net
+    # arcface_model.load_state_dict(torch.load(args.arcface_model), strict=False)
+    # arcface_model.to(device)
+    # arcface_model.eval()
+
+    # arcface net and model
+
+    arcface_model = get_model(args.arcface_network, fp16=True)
+    arcface_model.load_state_dict(torch.load(args.arcface_model))
     arcface_model.eval()
-
-
     print('Finished loading arcface model!')
 
 
@@ -513,19 +433,9 @@ if __name__ == '__main__':
         for face in os.listdir(os.path.join(face_images_path, person)):  # 人脸照片转换为特征
             person_image = load_image(os.path.join(face_images_path, person,
                                                    face))  # transform(Image.open(os.path.join(file_path, person, face))).cuda()
-
-            data = torch.from_numpy(person_image)
-            data = data.to(torch.device("cpu" if args.cpu else "cuda"))
-            # person_feature = net.encode(person_picture[None, ...])  # 获取编码后的每一个人的脸部特征
-            output = arcface_model(data)  # 获取特征
-            output = output.data.cpu().numpy()
-            #print(output.shape)  # 2*512
-            fe_1 = output[::2]  # 正面特征
-            fe_2 = output[1::2]  # 镜像特征
-            #person_feature = []
-            person_feature = np.hstack((fe_1, fe_2))
-            person_feature = person_feature.reshape(1024)
-            #print(person_feature)
+            person_image.cpu()
+            feat = arcface_model(person_image).numpy()
+            person_feature = feat[0]
             # feature = person_feature.detach().cpu()  # 将脸部特征转到CPU上，节省GPU的计算量
             person_faces.append(person_feature)  # 将同一个人脸的人脸特征存放到同一个列表中
         # persons_faces[person] = person_face  #
@@ -616,12 +526,12 @@ if __name__ == '__main__':
     capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 768* 1)
     max_fps = 0
     fps = 0.0
-    count = 0  # 用于跳帧检测
+    count = 1  # 用于跳帧检测
 
     while True:
         start_time = time.time()
-        count += 1
         if count % 3 != 0:  # 每3帧检测一次
+            count += 1
             continue
         for i in range(1):  # range(100)
             '''
@@ -632,6 +542,117 @@ if __name__ == '__main__':
             ref, img_raw = capture.read()  # 读取某一帧
             if(img_raw.shape == 0):
                 continue
+            flag_B = True  # 是否闭眼的flag
+            flag_Y = False
+            num_rec = 0  # VOC_CLASSES中被检测到的类别的个数
+            start = time.time()  # 计时
+            x = cv2.resize(img_raw, (300, 300)).astype(np.float32)
+
+
+
+            x -= img_mean
+            x = x.astype(np.float32)
+            x = x[:, :, ::-1].copy()
+            x = torch.from_numpy(x).permute(2, 0, 1)
+            xx = Variable(x.unsqueeze(0))
+            if torch.cuda.is_available():
+                xx = xx.cuda()
+            y = SSD_net(xx)
+            #print(y)
+            softmax = nn.Softmax(dim=-1)
+            detect = Detect(Config.class_num, 0, 200, 0.01, 0.45)
+            priors = utils.default_prior_box()
+            loc, conf = y
+            loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
+            conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
+
+            detections = detect(
+                loc.view(loc.size(0), -1, 4),
+                softmax(conf.view(conf.size(0), -1, Config.class_num)),
+                torch.cat([o.view(-1, 4) for o in priors], 0)
+            ).data
+            labels = VOC_CLASSES
+            top_k = 10
+            #print(detections)
+            # 将检测结果放置于图片上
+            scale = torch.Tensor(img_raw.shape[1::-1]).repeat(2)
+            for i in range(detections.size(1)):
+
+                j = 0
+                while detections[0, i, j, 0] >= 0.4:
+                    score = detections[0, i, j, 0]
+                    label_name = labels[i - 1]
+                    if label_name == 'closed_eye':
+                        flag_B = False
+                    if label_name == 'open_mouth':
+                        flag_Y = True
+                    display_txt = '%s:%.2f' % (label_name, score)
+                    pt = (detections[0, i, j, 1:] * scale).cpu().numpy()
+                    coords = (pt[0], pt[1]), pt[2] - pt[0] + 1, pt[3] - pt[1] + 1
+                    color = colors_tableau[i]
+                    cv2.rectangle(img_raw, (pt[0], pt[1]), (pt[2], pt[3]), color, 2)
+
+                    cv2.putText(img_raw, display_txt, (int(pt[0]), int(pt[1]) + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                                (255, 255, 255),
+                                1, 8)
+                    j += 1
+                    num_rec += 1
+            if num_rec > 0:
+                if flag_B:
+                    # print(' 1:eye-open')
+                    list_B = np.append(list_B, 1)  # 睁眼为‘1’
+                else:
+                    # print(' 0:eye-closed')
+                    list_B = np.append(list_B, 0)  # 闭眼为‘0’
+                list_B = np.delete(list_B, 0) #删掉第一个值，更新list
+                if flag_Y:
+                    list_Y = np.append(list_Y, 1)  # 张嘴为‘1’
+                else:
+                    list_Y = np.append(list_Y, 0)  # 闭嘴为‘0’
+                list_Y = np.delete(list_Y, 0) #删掉第一个值，更新list
+            else:
+                print('nothing detected')
+            # print(list)
+            # 实时计算PERCLOS
+            perclos = 1 - np.average(list_B)
+            # print('perclos={:f}'.format(perclos))
+            if list_B[13] == 1 and list_B[14] == 0:
+                # 如果上一帧为’1‘，此帧为’0‘则判定为眨眼
+                print('----------------眨眼----------------------')
+                blink_count += 1
+            blink_T = time.time() - blink_start
+            if blink_T > 10:
+                # 每10秒计算一次眨眼频率
+                blink_freq = blink_count / blink_T
+                blink_start = time.time()
+                blink_count = 0
+            # print('blink_freq={:f}'.format(blink_freq))
+            # 检测打哈欠
+            # if Yawn(list_Y,list_Y1):
+            if (list_Y[len(list_Y) - len(list_Y1):] == list_Y1).all():
+                print('----------------------打哈欠----------------------')
+                yawn_count += 1
+                list_Y = np.zeros(50)
+            # 计算打哈欠频率
+            yawn_T = time.time() - yawn_start
+            if yawn_T > 60:
+                yawn_freq = yawn_count / yawn_T
+                yawn_start = time.time()
+                yawn_count = 0
+            #print('yawn_freq={:.4f}'.format(yawn_freq))
+
+            # 判断疲劳部分-------------------------------------------------------------
+            if (perclos > 0.4):
+                print('疲劳')
+            elif (blink_freq < 0.25):
+                print('疲劳')
+                blink_freq = 0.5  # 如果因为眨眼频率判断疲劳，则初始化眨眼频率
+            elif (yawn_freq > 5.0 / 60):
+                print("疲劳")
+                yawn_freq = 0  # 初始化，同上
+            else:
+                print('清醒')
+            # 判断疲劳部分-------------------------------------------------------------
 
 
             #检测人脸--------------------------------------------------------------------------
@@ -700,222 +721,13 @@ if __name__ == '__main__':
             # 到这里为止我们已经利用Retinaface_pytorch的预训练模型检测完了人脸，并获得了人脸框和人脸五个特征点的坐标信息，全保存在dets中，接下来为人脸剪切部分
             print("dets:", dets)
 
-
-
-
-
-
-
-            #人脸验证---------------------------------------------------------------------------------------------
-            for num, b in enumerate(dets):  # dets中包含了人脸框和五个特征点的坐标
-                if b[4] < args.vis_thres:
-                    continue;
-                vis_thres_text = "{:.4f}".format(b[4])
-                b = list(map(int, b))
-                # 计算人脸框矩形大小
-                Height = b[3] - b[1]
-                Width = b[2] - b[0]
-                '''
-                # 显示人脸矩阵大小
-                print("人脸数 / faces in all:", str(num + 1), "\n")
-                print("窗口大小 / The size of window:"
-                    , '\n', "高度 / height:", Height
-                    , '\n', "宽度 / width: ", Width)
-                '''
-                # 根据人脸框大小，生成空白的图片
-                img_cut = np.zeros((Height, Width, 3), np.uint8)
-                # 将人脸填充到空白图片
-                # for h in range(Height):
-                #     for w in range(Width):
-                #         img_cut[h][w] = img_raw[b[1] + h][b[0] + w]
-                img_cut = img_raw[b[1]:b[3], b[0]:b[2]]
-                cut_path = "gzdstore_face/"  # 你可以将这里的路径换成你自己的路径 裁剪图片的保存路径
-                if args.store_face:
-                    if not os.path.exists(cut_path):
-                        os.makedirs(cut_path)
-                    if cv2.waitKey(1) == ord('p'):
-                        cv2.imwrite(cut_path + 'storeface' + "_" + str(count + 1) + ".jpg",
-                                    img_cut)  # 将图片保存至你指定的文件夹
-                        print("Save into:", cut_path + 'storeface' + "_" + str(count + 1) + ".jpg")
-
-
-
-
-                cv2.rectangle(img_raw, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 2)
-                cx = b[0]
-                cy = b[1] + 12
-                cv2.putText(img_raw,vis_thres_text+"_"+str(num), (cx, cy),
-                            cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
-                # landms，在人脸上画出特征点，要是你想保存不显示特征点的人脸图，你可以把这里注释掉
-                cv2.circle(img_raw, (b[5], b[6]), 1, (0, 0, 255), 4)
-                cv2.circle(img_raw, (b[7], b[8]), 1, (0, 255, 255), 4)
-                cv2.circle(img_raw, (b[9], b[10]), 1, (255, 0, 255), 4)
-                cv2.circle(img_raw, (b[11], b[12]), 1, (0, 255, 0), 4)
-                cv2.circle(img_raw, (b[13], b[14]), 1, (255, 0, 0), 4)
-
-
-
-                #image_input就是要输入arcface的图片
-
-                #image_input = cv2.cvtColor(img_cut, cv2.COLOR_BGR2GRAY)
-                image_input = image_format(img_cut)
-
-                data = torch.from_numpy(image_input)
-                data = data.to(torch.device("cpu" if args.cpu else "cuda"))
-                output = arcface_model(data)  # 获取特征
-                output = output.data.cpu().numpy()
-                #print(output.shape)
-                fe_1 = output[::2]  # 正面特征
-                fe_2 = output[1::2]  # 镜像特征
-                person_feature_x = []
-                person_feature_x = np.hstack((fe_1, fe_2))
-                print('person_feature_x.shape:', person_feature_x.shape)
-                person_feature_x = person_feature_x.reshape(1024)
-                print('person_feature_x.shape:', person_feature_x.shape)
-                #得到当前人脸特征person_feature_x
-                #exit()
-
-                #与已有人脸特征比较
-                maxdiff = 0
-                persons_similarity = []
-                save_data = args.face_features_save_path + args.face_features_save_name
-                # doc = open(save_data, "rb")
-                # person_s = pickle.load(doc)  # 读取列表形式
-                # print(person_s)
-                # print(persons)
-                for person_faces in persons:
-                    person_name = person_faces[0]
-                    #print(person_name)
-                    person_features = person_faces[1]
-                    for person_feature in person_features:
-                        diff = cosin_metric(person_feature_x,person_feature)
-                        # print(person_name, diff)
-                        if(diff>maxdiff):
-                            maxdiff = diff
-                            name = person_name
-                            persons_similarity.append([person_name, diff])
-            # print(name, maxdiff)
-            # cv2.putText(img_raw, (" 相似度:%.2f" % maxdiff), (60, 40), cv2.FONT_HERSHEY_DUPLEX, 1, (255, 0, 0))  # 相似度
-
-            flag_B = True  # 是否闭眼的flag
-            flag_Y = False
-            num_rec = 0  # VOC_CLASSES中被检测到的类别的个数
-            start = time.time()  # 计时
-            x = cv2.resize(img_raw, (300, 300)).astype(np.float32)
-
-            x -= img_mean
-            x = x.astype(np.float32)
-            x = x[:, :, ::-1].copy()
-            x = torch.from_numpy(x).permute(2, 0, 1)
-            xx = Variable(x.unsqueeze(0))
-            if torch.cuda.is_available():
-                xx = xx.cuda()
-            y = SSD_net(xx)
-            # print(y)
-            softmax = nn.Softmax(dim=-1)
-            detect = Detect(Config.class_num, 0, 200, 0.01, 0.45)
-            priors = utils.default_prior_box()
-            loc, conf = y
-            loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
-            conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
-
-            detections = detect(
-                loc.view(loc.size(0), -1, 4),
-                softmax(conf.view(conf.size(0), -1, Config.class_num)),
-                torch.cat([o.view(-1, 4) for o in priors], 0)
-            ).data
-            labels = VOC_CLASSES
-            top_k = 10
-            # print(detections)
-            # 将检测结果放置于图片上
-            scale = torch.Tensor(img_raw.shape[1::-1]).repeat(2)
-            for i in range(detections.size(1)):
-
-                j = 0
-                while detections[0, i, j, 0] >= 0.4:
-                    score = detections[0, i, j, 0]
-                    label_name = labels[i - 1]
-                    if label_name == 'closed_eye':
-                        flag_B = False
-                    if label_name == 'open_mouth':
-                        flag_Y = True
-                    display_txt = '%s:%.2f' % (label_name, score)
-                    pt = (detections[0, i, j, 1:] * scale).cpu().numpy()
-                    coords = (pt[0], pt[1]), pt[2] - pt[0] + 1, pt[3] - pt[1] + 1
-                    color = colors_tableau[i]
-                    cv2.rectangle(img_raw, (pt[0], pt[1]), (pt[2], pt[3]), color, 2)
-
-                    cv2.putText(img_raw, display_txt, (int(pt[0]), int(pt[1]) + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                                (255, 255, 255),
-                                1, 8)
-                    j += 1
-                    num_rec += 1
-            if num_rec > 0:
-                if flag_B:
-                    # print(' 1:eye-open')
-                    list_B = np.append(list_B, 1)  # 睁眼为‘1’
-                else:
-                    # print(' 0:eye-closed')
-                    list_B = np.append(list_B, 0)  # 闭眼为‘0’
-                list_B = np.delete(list_B, 0)  # 删掉第一个值，更新list
-                if flag_Y:
-                    list_Y = np.append(list_Y, 1)  # 张嘴为‘1’
-                else:
-                    list_Y = np.append(list_Y, 0)  # 闭嘴为‘0’
-                list_Y = np.delete(list_Y, 0)  # 删掉第一个值，更新list
-            else:
-                print('nothing detected')
-            # print(list)
-            # 实时计算PERCLOS
-            perclos = 1 - np.average(list_B)
-            # print('perclos={:f}'.format(perclos))
-            if list_B[13] == 1 and list_B[14] == 0:
-                # 如果上一帧为’1‘，此帧为’0‘则判定为眨眼
-                print('----------------眨眼----------------------')
-                blink_count += 1
-            blink_T = time.time() - blink_start
-            if blink_T > 10:
-                # 每10秒计算一次眨眼频率
-                blink_freq = blink_count / blink_T
-                blink_start = time.time()
-                blink_count = 0
-            # print('blink_freq={:f}'.format(blink_freq))
-            # 检测打哈欠
-            # if Yawn(list_Y,list_Y1):
-            if (list_Y[len(list_Y) - len(list_Y1):] == list_Y1).all():
-                print('----------------------打哈欠----------------------')
-                yawn_count += 1
-                list_Y = np.zeros(50)
-            # 计算打哈欠频率
-            yawn_T = time.time() - yawn_start
-            if yawn_T > 60:
-                yawn_freq = yawn_count / yawn_T
-                yawn_start = time.time()
-                yawn_count = 0
-            # print('yawn_freq={:.4f}'.format(yawn_freq))
-
-            # 判断疲劳部分-------------------------------------------------------------
-            if (perclos > 0.4):
-                print('疲劳')
-            elif (blink_freq < 0.25):
-                print('疲劳')
-                blink_freq = 0.5  # 如果因为眨眼频率判断疲劳，则初始化眨眼频率
-            elif (yawn_freq > 5.0 / 60):
-                print("疲劳")
-                yawn_freq = 0  # 初始化，同上
-            else:
-                print('清醒')
-            # 判断疲劳部分-------------------------------------------------------------
-
-
-
-
             # 头部姿态估计-----------------------------------------------------------------------
             print('Start detecting pose ...')
             print("dets.shape[0]:", dets.shape[0])
             faces = np.empty((dets.shape[0], img_size, img_size, 3))  # detected.shape[2]是人脸的个数吗 dets.shape[2]
             draw_headpose_det(dets, img_raw, faces, ad, img_size, img_width, img_height, model)
             # 头部姿态估计-----------------------------------------------------------------------
+
 
             # # 头部姿态估计-----------------------------------------------------------------------
             # print('Start detecting pose ...')
@@ -934,6 +746,76 @@ if __name__ == '__main__':
 
 
 
+            #人脸验证---------------------------------------------------------------------------------------------
+            for num, b in enumerate(dets):  # dets中包含了人脸框和五个特征点的坐标
+                if b[4] < args.vis_thres:
+                    continue;
+                text = "{:.4f}".format(b[4])
+                b = list(map(int, b))
+                cv2.rectangle(img_raw, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 2)
+                cx = b[0]
+                cy = b[1] + 12
+                cv2.putText(img_raw,text+"_"+str(num), (cx, cy),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
+                # landms，在人脸上画出特征点，要是你想保存不显示特征点的人脸图，你可以把这里注释掉
+                cv2.circle(img_raw, (b[5], b[6]), 1, (0, 0, 255), 4)
+                cv2.circle(img_raw, (b[7], b[8]), 1, (0, 255, 255), 4)
+                cv2.circle(img_raw, (b[9], b[10]), 1, (255, 0, 255), 4)
+                cv2.circle(img_raw, (b[11], b[12]), 1, (0, 255, 0), 4)
+                cv2.circle(img_raw, (b[13], b[14]), 1, (255, 0, 0), 4)
+
+                # 计算人脸框矩形大小
+                Height = b[3] - b[1]
+                Width = b[2] - b[0]
+
+                '''
+                # 显示人脸矩阵大小
+                print("人脸数 / faces in all:", str(num + 1), "\n")
+                print("窗口大小 / The size of window:"
+                    , '\n', "高度 / height:", Height
+                    , '\n', "宽度 / width: ", Width)
+                '''
+
+
+                # 根据人脸框大小，生成空白的图片
+                img_cut = np.zeros((Height, Width, 3), np.uint8)
+                # 将人脸填充到空白图片
+                # for h in range(Height):
+                #     for w in range(Width):
+                #         img_cut[h][w] = img_raw[b[1] + h][b[0] + w]
+                img_cut = img_raw[b[1]:b[3], b[0]:b[2]]
+
+                #image_input就是要输入arcface的图片
+                image_input = image_format(img_cut)
+                feat = []
+                feat = arcface_model(person_image).numpy()
+                person_feature_x = feat[0]
+                print('person_feature_x.shape:', person_feature_x.shape)
+                #得到当前人脸特征person_feature_x
+                #exit()
+
+                #与已有人脸特征比较
+                maxdiff = 0
+                persons_similarity = []
+                save_data = args.face_features_save_path + args.face_features_save_name
+                # doc = open(save_data, "rb")
+                # person_s = pickle.load(doc)  # 读取列表形式
+                # print(person_s)
+                # print(persons)
+                for person_faces in persons:
+                    person_name = person_faces[0]
+                    #print(person_name)
+                    person_features = person_faces[1]
+                    for person_feature in person_features:
+                        diff = cosin_metric(person_feature_x,person_feature)
+                        print(person_name, diff)
+                        if(diff>maxdiff):
+                            maxdiff = diff
+                            name = person_name
+                            #print(name, maxdiff)
+                            persons_similarity.append([person_name, diff])
+            # print(name, maxdiff)
+            # cv2.putText(img_raw, (" 相似度:%.2f" % maxdiff), (60, 40), cv2.FONT_HERSHEY_DUPLEX, 1, (255, 0, 0))  # 相似度
             cv2.putText(img_raw, str("who :" + name), (500, 40), cv2.FONT_HERSHEY_DUPLEX, 1,
                         (255, 255, 255))  # 展示who
             end_time = time.time()

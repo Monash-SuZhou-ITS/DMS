@@ -24,11 +24,13 @@ parser.add_argument('--top_k', default=5000, type=int, help='top_k')
 parser.add_argument('--nms_threshold', default=0.4, type=float, help='nms_threshold')
 parser.add_argument('--keep_top_k', default=750, type=int, help='keep_top_k')
 parser.add_argument('-s', '--save_image', action="store_true", default=True, help='show detection results')
-parser.add_argument('--vis_thres', default=0.6, type=float, help='visualization_threshold')
-parser.add_argument('--image_path', default='./curve/raw_picture/ztb_03.jpg', type=str, help='picture path to detect')
+parser.add_argument('--vis_thres', default=0.7, type=float, help='visualization_threshold')
+
 
 parser.add_argument('--show_cutting_image', action ="store_true", default =True, help = 'show_crop_images')
 parser.add_argument('--save_folder', default='./curve/info', type=str, help='Dir to save results')
+
+parser.add_argument('--image_path', default='./curve/raw_picture/gzd_09.jpg', type=str, help='picture path to detect')
 args = parser.parse_args()
 
 
